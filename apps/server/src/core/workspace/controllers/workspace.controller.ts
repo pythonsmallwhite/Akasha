@@ -36,6 +36,7 @@ import { LicenseCheckService } from '../../../integrations/environment/license-c
 import { CheckHostnameDto } from '../dto/check-hostname.dto';
 import { RemoveWorkspaceUserDto } from '../dto/remove-workspace-user.dto';
 import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
+import { Feature } from '../../../common/features';
 
 @UseGuards(JwtAuthGuard)
 @Controller('workspace')
@@ -72,10 +73,18 @@ export class WorkspaceController {
       licenseKey = await this.workspaceRepo.findLicenseKeyById(workspace.id);
     }
 
+    const features = this.licenseCheckService.resolveFeatures(licenseKey, plan);
+    if (!features.includes(Feature.VIEWER_COMMENTS)) {
+      features.push(Feature.VIEWER_COMMENTS);
+    }
+    if (!features.includes(Feature.PAGE_PERMISSIONS)) {
+      features.push(Feature.PAGE_PERMISSIONS);
+    }
+
     return {
       cloud: this.environmentService.isCloud(),
       tier: this.licenseCheckService.resolveTier(licenseKey, plan),
-      features: this.licenseCheckService.resolveFeatures(licenseKey, plan),
+      features,
     };
   }
 

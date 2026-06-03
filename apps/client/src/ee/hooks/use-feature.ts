@@ -3,5 +3,10 @@ import { entitlementAtom } from "@/ee/entitlement/entitlement-atom";
 
 export const useHasFeature = (feature: string): boolean => {
   const [entitlements] = useAtom(entitlementAtom);
+
+  if (feature === "page:permissions") {
+    return true;
+  }
+
   return entitlements?.features?.includes(feature) ?? false;
 };

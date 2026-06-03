@@ -18,9 +18,12 @@ import { UpdatePageDto } from './dto/update-page.dto';
 import { MovePageDto, MovePageToSpaceDto } from './dto/move-page.dto';
 import {
   DeletePageDto,
+  AddPagePermissionDto,
   PageHistoryIdDto,
   PageIdDto,
   PageInfoDto,
+  RemovePagePermissionDto,
+  UpdatePagePermissionRoleDto,
 } from './dto/page.dto';
 import { PageHistoryService } from './services/page-history.service';
 import { AuthUser } from '../../common/decorators/auth-user.decorator';
@@ -35,6 +38,7 @@ import {
 } from '../casl/interfaces/space-ability.type';
 import SpaceAbilityFactory from '../casl/abilities/space-ability.factory';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
+import { PagePermissionRepo } from '@docmost/db/repos/page/page-permission.repo';
 import { RecentPageDto } from './dto/recent-page.dto';
 import { CreatedByUserDto } from './dto/created-by-user.dto';
 import { DuplicatePageDto } from './dto/duplicate-page.dto';
@@ -52,6 +56,10 @@ import {
   IAuditService,
 } from '../../integrations/audit/audit.service';
 import { getPageTitle } from '../../common/helpers';
+import { PageAccessLevel, PagePermissionRole } from '../../common/helpers/types/permission';
+import { InjectKysely } from 'nestjs-kysely';
+import { KyselyDB } from '@docmost/db/types/kysely.types';
+import { executeTx } from '@docmost/db/utils';
 
 @UseGuards(JwtAuthGuard)
 @Controller('pages')
@@ -59,11 +67,13 @@ export class PageController {
   constructor(
     private readonly pageService: PageService,
     private readonly pageRepo: PageRepo,
+    private readonly pagePermissionRepo: PagePermissionRepo,
     private readonly pageHistoryService: PageHistoryService,
     private readonly spaceAbility: SpaceAbilityFactory,
     private readonly pageAccessService: PageAccessService,
     private readonly backlinkService: BacklinkService,
     private readonly labelService: LabelService,
+    @InjectKysely() private readonly db: KyselyDB,
     @Inject(AUDIT_SERVICE) private readonly auditService: IAuditService,
   ) {}
 
@@ -118,6 +128,333 @@ export class PageController {
     await this.pageAccessService.validateCanView(page, user);
 
     return this.labelService.getPageLabels(page.id, pagination);
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('permission-info')
+  async getPagePermissionInfo(
+    @Body() dto: PageIdDto,
+    @AuthUser() user: User,
+  ) {
+    const page = await this.pageRepo.findById(dto.pageId);
+    if (!page) {
+      throw new NotFoundException('Page not found');
+    }
+
+    const permissions =
+      await this.pageAccessService.validateCanViewWithPermissions(page, user);
+    const pageAccess = await this.pagePermissionRepo.findPageAccessByPageId(
+      page.id,
+    );
+    const restrictedAncestor =
+      await this.pagePermissionRepo.findRestrictedAncestor(page.id);
+
+    let inheritedFrom:
+      | { id: string; slugId: string; title: string }
+      | undefined;
+    if (restrictedAncestor && restrictedAncestor.depth > 0) {
+      const ancestor = await this.pageRepo.findById(restrictedAncestor.pageId);
+      if (ancestor) {
+        inheritedFrom = {
+          id: ancestor.id,
+          slugId: ancestor.slugId,
+          title: getPageTitle(ancestor.title),
+        };
+      }
+    }
+
+    return {
+      restrictionId: pageAccess?.id,
+      hasDirectRestriction: Boolean(pageAccess),
+      hasInheritedRestriction: Boolean(
+        restrictedAncestor && restrictedAncestor.depth > 0,
+      ),
+      inheritedFrom,
+      userAccess: {
+        canView: true,
+        canEdit: permissions.canEdit,
+        canManage: permissions.canEdit,
+      },
+    };
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('permissions')
+  async getPagePermissions(
+    @Body() dto: PageIdDto,
+    @Body() pagination: PaginationOptions,
+    @AuthUser() user: User,
+  ) {
+    const page = await this.pageRepo.findById(dto.pageId);
+    if (!page) {
+      throw new NotFoundException('Page not found');
+    }
+
+    await this.pageAccessService.validateCanView(page, user);
+
+    const pageAccess = await this.pagePermissionRepo.findPageAccessByPageId(
+      page.id,
+    );
+    if (!pageAccess) {
+      return {
+        items: [],
+        meta: {
+          limit: pagination.limit,
+          hasNextPage: false,
+          hasPrevPage: false,
+          nextCursor: null,
+          prevCursor: null,
+        },
+      };
+    }
+
+    return this.pagePermissionRepo.getPagePermissionsPaginated(
+      pageAccess.id,
+      pagination,
+    );
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('restrict')
+  async restrictPage(
+    @Body() dto: PageIdDto,
+    @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
+  ) {
+    const page = await this.pageRepo.findById(dto.pageId);
+    if (!page || page.deletedAt || page.workspaceId !== workspace.id) {
+      throw new NotFoundException('Page not found');
+    }
+
+    await this.pageAccessService.validateCanEdit(page, user);
+
+    await executeTx(this.db, async (trx) => {
+      let pageAccess = await this.pagePermissionRepo.findPageAccessByPageId(
+        page.id,
+        trx,
+      );
+      if (!pageAccess) {
+        pageAccess = await this.pagePermissionRepo.insertPageAccess(
+          {
+            pageId: page.id,
+            workspaceId: workspace.id,
+            spaceId: page.spaceId,
+            accessLevel: PageAccessLevel.RESTRICTED,
+            creatorId: user.id,
+          },
+          trx,
+        );
+      }
+
+      const existing =
+        await this.pagePermissionRepo.findPagePermissionByUserId(
+          pageAccess.id,
+          user.id,
+          trx,
+        );
+      if (existing) {
+        await this.pagePermissionRepo.updatePagePermissionRole(
+          pageAccess.id,
+          PagePermissionRole.WRITER,
+          { userId: user.id },
+          trx,
+        );
+      } else {
+        await this.pagePermissionRepo.insertPagePermissions(
+          [
+            {
+              pageAccessId: pageAccess.id,
+              userId: user.id,
+              role: PagePermissionRole.WRITER,
+              addedById: user.id,
+            },
+          ],
+          trx,
+        );
+      }
+    });
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('remove-restriction')
+  async removePageRestriction(
+    @Body() dto: PageIdDto,
+    @AuthUser() user: User,
+  ) {
+    const page = await this.pageRepo.findById(dto.pageId);
+    if (!page || page.deletedAt) {
+      throw new NotFoundException('Page not found');
+    }
+
+    await this.pageAccessService.validateCanEdit(page, user);
+    await this.pagePermissionRepo.deletePageAccess(page.id);
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('add-permission')
+  async addPagePermission(
+    @Body() dto: AddPagePermissionDto,
+    @AuthUser() user: User,
+    @AuthWorkspace() workspace: Workspace,
+  ) {
+    const userIds = dto.userIds ?? [];
+    const groupIds = dto.groupIds ?? [];
+    if (userIds.length === 0 && groupIds.length === 0) {
+      throw new BadRequestException('No users or groups provided');
+    }
+
+    const page = await this.pageRepo.findById(dto.pageId);
+    if (!page || page.deletedAt || page.workspaceId !== workspace.id) {
+      throw new NotFoundException('Page not found');
+    }
+
+    await this.pageAccessService.validateCanEdit(page, user);
+
+    await executeTx(this.db, async (trx) => {
+      let pageAccess = await this.pagePermissionRepo.findPageAccessByPageId(
+        page.id,
+        trx,
+      );
+      if (!pageAccess) {
+        pageAccess = await this.pagePermissionRepo.insertPageAccess(
+          {
+            pageId: page.id,
+            workspaceId: workspace.id,
+            spaceId: page.spaceId,
+            accessLevel: PageAccessLevel.RESTRICTED,
+            creatorId: user.id,
+          },
+          trx,
+        );
+      }
+
+      for (const userId of userIds) {
+        const existing =
+          await this.pagePermissionRepo.findPagePermissionByUserId(
+            pageAccess.id,
+            userId,
+            trx,
+          );
+        if (existing) {
+          await this.pagePermissionRepo.updatePagePermissionRole(
+            pageAccess.id,
+            dto.role,
+            { userId },
+            trx,
+          );
+        } else {
+          await this.pagePermissionRepo.insertPagePermissions(
+            [
+              {
+                pageAccessId: pageAccess.id,
+                userId,
+                role: dto.role,
+                addedById: user.id,
+              },
+            ],
+            trx,
+          );
+        }
+      }
+
+      for (const groupId of groupIds) {
+        const existing =
+          await this.pagePermissionRepo.findPagePermissionByGroupId(
+            pageAccess.id,
+            groupId,
+            trx,
+          );
+        if (existing) {
+          await this.pagePermissionRepo.updatePagePermissionRole(
+            pageAccess.id,
+            dto.role,
+            { groupId },
+            trx,
+          );
+        } else {
+          await this.pagePermissionRepo.insertPagePermissions(
+            [
+              {
+                pageAccessId: pageAccess.id,
+                groupId,
+                role: dto.role,
+                addedById: user.id,
+              },
+            ],
+            trx,
+          );
+        }
+      }
+    });
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('remove-permission')
+  async removePagePermission(
+    @Body() dto: RemovePagePermissionDto,
+    @AuthUser() user: User,
+  ) {
+    const userIds = dto.userIds ?? [];
+    const groupIds = dto.groupIds ?? [];
+    if (userIds.length === 0 && groupIds.length === 0) {
+      throw new BadRequestException('No users or groups provided');
+    }
+
+    const page = await this.pageRepo.findById(dto.pageId);
+    if (!page || page.deletedAt) {
+      throw new NotFoundException('Page not found');
+    }
+
+    await this.pageAccessService.validateCanEdit(page, user);
+    const pageAccess = await this.pagePermissionRepo.findPageAccessByPageId(
+      page.id,
+    );
+    if (!pageAccess) {
+      return;
+    }
+
+    await executeTx(this.db, async (trx) => {
+      await this.pagePermissionRepo.deletePagePermissionsByUserIds(
+        pageAccess.id,
+        userIds,
+        trx,
+      );
+      await this.pagePermissionRepo.deletePagePermissionsByGroupIds(
+        pageAccess.id,
+        groupIds,
+        trx,
+      );
+    });
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('update-permission')
+  async updatePagePermissionRole(
+    @Body() dto: UpdatePagePermissionRoleDto,
+    @AuthUser() user: User,
+  ) {
+    if ((!dto.userId && !dto.groupId) || (dto.userId && dto.groupId)) {
+      throw new BadRequestException('Provide exactly one user or group');
+    }
+
+    const page = await this.pageRepo.findById(dto.pageId);
+    if (!page || page.deletedAt) {
+      throw new NotFoundException('Page not found');
+    }
+
+    await this.pageAccessService.validateCanEdit(page, user);
+    const pageAccess = await this.pagePermissionRepo.findPageAccessByPageId(
+      page.id,
+    );
+    if (!pageAccess) {
+      throw new NotFoundException('Page restriction not found');
+    }
+
+    await this.pagePermissionRepo.updatePagePermissionRole(
+      pageAccess.id,
+      dto.role,
+      { userId: dto.userId, groupId: dto.groupId },
+    );
   }
 
   @HttpCode(HttpStatus.OK)

@@ -153,16 +153,6 @@ export class SpaceService {
         throw new ForbiddenException('This feature requires a valid license');
       }
 
-      if (
-        typeof updateSpaceDto.allowViewerComments !== 'undefined' &&
-        !this.licenseCheckService.hasFeature(
-          workspace.licenseKey,
-          Feature.VIEWER_COMMENTS,
-          workspace.plan,
-        )
-      ) {
-        throw new ForbiddenException('This feature requires a valid license');
-      }
     }
 
     const spaceBefore = await this.spaceRepo.findById(

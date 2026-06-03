@@ -1,5 +1,7 @@
 import {
+  IsArray,
   IsBoolean,
+  IsEnum,
   IsIn,
   IsNotEmpty,
   IsOptional,
@@ -9,6 +11,7 @@ import {
 import { Transform } from 'class-transformer';
 
 import { ContentFormat } from './create-page.dto';
+import { PagePermissionRole } from '../../../common/helpers/types/permission';
 
 export class PageIdDto {
   @IsString()
@@ -45,4 +48,44 @@ export class DeletePageDto extends PageIdDto {
   @IsOptional()
   @IsBoolean()
   permanentlyDelete?: boolean;
+}
+
+export class AddPagePermissionDto extends PageIdDto {
+  @IsEnum(PagePermissionRole)
+  role: PagePermissionRole;
+
+  @IsOptional()
+  @IsArray()
+  @IsUUID('all', { each: true })
+  userIds?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsUUID('all', { each: true })
+  groupIds?: string[];
+}
+
+export class RemovePagePermissionDto extends PageIdDto {
+  @IsOptional()
+  @IsArray()
+  @IsUUID('all', { each: true })
+  userIds?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsUUID('all', { each: true })
+  groupIds?: string[];
+}
+
+export class UpdatePagePermissionRoleDto extends PageIdDto {
+  @IsEnum(PagePermissionRole)
+  role: PagePermissionRole;
+
+  @IsOptional()
+  @IsUUID()
+  userId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  groupId?: string;
 }
