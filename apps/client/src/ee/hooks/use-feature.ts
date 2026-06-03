@@ -4,7 +4,7 @@ import { entitlementAtom } from "@/ee/entitlement/entitlement-atom";
 export const useHasFeature = (feature: string): boolean => {
   const [entitlements] = useAtom(entitlementAtom);
 
-  if (feature === "page:permissions") {
+  if (feature === "page:permissions" || feature === "comment:resolution") {
     return true;
   }
 

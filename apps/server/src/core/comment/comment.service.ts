@@ -206,6 +206,51 @@ export class CommentService {
     return comment;
   }
 
+  async resolve(
+    comment: Comment,
+    resolved: boolean,
+    authUser: User,
+  ): Promise<Comment> {
+    const updatedAt = new Date();
+
+    await this.commentRepo.updateComment(
+      {
+        resolvedAt: resolved ? updatedAt : null,
+        resolvedById: resolved ? authUser.id : null,
+        updatedAt,
+      },
+      comment.id,
+    );
+
+    const documentName = `page.${comment.pageId}`;
+    try {
+      await this.collaborationGateway.handleYjsEvent(
+        'resolveCommentMark',
+        documentName,
+        {
+          commentId: comment.id,
+          resolved,
+          user: authUser,
+        },
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Failed to update comment mark for comment ${comment.id}`,
+        error,
+      );
+    }
+
+    const updatedComment = await this.findById(comment.id);
+
+    this.wsService.emitCommentEvent(comment.spaceId, comment.pageId, {
+      operation: 'commentResolved',
+      pageId: comment.pageId,
+      comment: updatedComment,
+    });
+
+    return updatedComment;
+  }
+
   private async queueCommentNotification(
     content: any,
     oldMentionIds: string[],
