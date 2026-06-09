@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { HoidcController } from './hoidc.controller';
 import { HoidcService } from './hoidc.service';
 import { UserModule } from '../../core/user/user.module';
+import { SpaceModule } from '../../core/space/space.module';
 
 /**
  * SSO Module - 处理 HOIDC 单点登录
@@ -13,7 +14,7 @@ import { UserModule } from '../../core/user/user.module';
  * - UserRepo 在 UserModule 中 export，需要显式 import
  */
 @Module({
-  imports: [UserModule],
+  imports: [UserModule, SpaceModule],
   controllers: [HoidcController],
   providers: [HoidcService],
 })

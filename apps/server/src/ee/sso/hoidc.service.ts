@@ -9,6 +9,7 @@ import { AuthProvider, User } from '@docmost/db/types/entity.types';
 import { SessionService } from '../../core/session/session.service';
 import { UserRepo } from '@docmost/db/repos/user/user.repo';
 import { request } from 'undici';
+import { SpaceService } from '../../core/space/services/space.service';
 
 @Injectable()
 export class HoidcService {
@@ -16,6 +17,7 @@ export class HoidcService {
     @InjectKysely() private readonly db: KyselyDB,
     private readonly userRepo: UserRepo,
     private readonly sessionService: SessionService,
+    private readonly spaceService: SpaceService,
   ) {}
 
   /**
@@ -156,6 +158,7 @@ export class HoidcService {
         .executeTakeFirst();
     }
 
+    await this.spaceService.ensurePersonalSpace(user, workspaceId);
     return this.sessionService.createSessionAndToken(user);
   }
 }
