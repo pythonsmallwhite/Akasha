@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -15,6 +16,8 @@ import { PaginationOptions } from '@docmost/db/pagination/pagination-options';
 
 @Injectable()
 export class ApiKeyService {
+  private readonly logger = new Logger(ApiKeyService.name);
+
   constructor(
     private apiKeyRepo: ApiKeyRepo,
     private tokenService: TokenService,
@@ -33,18 +36,20 @@ export class ApiKeyService {
     const workspace = await this.workspaceRepo.findById(workspaceId);
     if (!workspace) throw new NotFoundException('Workspace not found');
 
+    // Always fetch user upfront — needed for token generation and permission check
+    const user = await this.userRepo.findById(creatorId, workspaceId);
+    if (!user) throw new ForbiddenException();
+
     // restrictApiToAdmins is stored in workspace.settings.api.restrictToAdmins
     const workspaceSettings = (workspace.settings ?? {}) as Record<string, any>;
     const restrictToAdmins = workspaceSettings?.api?.restrictToAdmins ?? false;
 
-    if (restrictToAdmins) {
-      const user = await this.userRepo.findById(creatorId, workspaceId);
-      if (
-        !user ||
-        (user.role !== UserRole.OWNER && user.role !== UserRole.ADMIN)
-      ) {
-        throw new ForbiddenException('API key creation is restricted to admins');
-      }
+    if (
+      restrictToAdmins &&
+      user.role !== UserRole.OWNER &&
+      user.role !== UserRole.ADMIN
+    ) {
+      throw new ForbiddenException('API key creation is restricted to admins');
     }
 
     const expiresDate = expiresAt ? new Date(expiresAt) : null;
@@ -58,8 +63,6 @@ export class ApiKeyService {
       workspaceId,
       expiresAt: expiresDate,
     });
-
-    const user = await this.userRepo.findById(creatorId, workspaceId);
 
     let expiresIn: number | undefined;
     if (expiresDate) {
@@ -106,8 +109,9 @@ export class ApiKeyService {
     if (!key) throw new NotFoundException('API key not found');
 
     const user = await this.userRepo.findById(userId, workspaceId);
+    if (!user) throw new ForbiddenException();
     const isAdmin =
-      user?.role === UserRole.OWNER || user?.role === UserRole.ADMIN;
+      user.role === UserRole.OWNER || user.role === UserRole.ADMIN;
     if (key.creatorId !== userId && !isAdmin) {
       throw new ForbiddenException();
     }
@@ -125,8 +129,9 @@ export class ApiKeyService {
     if (!key) throw new NotFoundException('API key not found');
 
     const user = await this.userRepo.findById(userId, workspaceId);
+    if (!user) throw new ForbiddenException();
     const isAdmin =
-      user?.role === UserRole.OWNER || user?.role === UserRole.ADMIN;
+      user.role === UserRole.OWNER || user.role === UserRole.ADMIN;
     if (key.creatorId !== userId && !isAdmin) {
       throw new ForbiddenException();
     }
@@ -151,7 +156,13 @@ export class ApiKeyService {
     const user = await this.userRepo.findById(payload.sub, payload.workspaceId);
     if (!user) throw new UnauthorizedException();
 
-    this.apiKeyRepo.updateLastUsed(key.id).catch(() => {});
+    this.apiKeyRepo
+      .updateLastUsed(key.id)
+      .catch((err) =>
+        this.logger.warn(
+          `Failed to update lastUsedAt for API key ${key.id}: ${err?.message}`,
+        ),
+      );
 
     return { user, workspace };
   }
